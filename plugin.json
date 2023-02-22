@@ -1,0 +1,7 @@
+{
+    "name": "Flashforge WiFi Printing",
+    "author": "Tom Walsh",
+    "version": "0.1",
+    "description": "A plugin to print and monitor Flashforge printers over WiFi/LAN",
+    "supported_sdk_versions": ["8.0.0"]
+}
