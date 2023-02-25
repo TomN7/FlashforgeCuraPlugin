@@ -21,7 +21,7 @@ from io import BytesIO, StringIO
 catalog = i18nCatalog("cura")
 
 MSGSIZE = 1024
-IPADDR = "192.168.1.24"
+IPADDR = "192.168.1.50"
 
 
 class FlashforgeOutputDevicePlugin(OutputDevicePlugin):
@@ -81,7 +81,17 @@ class FlashforgeOutputDevice(OutputDevice):
 
         self._stream.seek(0)
         self._gcode = self._stream.getvalue()
+
+        # Add Extruder index to Hotend and Bed Temp Commands
         self._gcode = re.sub(r"(M1(?:40|04) S\d+)(\.0)?(?: T\d)?", r"\1 T0", self._gcode)
+
+        # Remove decimals from fan speed commands
+        self._gcode = re.sub(r"(M106 S\d+)\.\d+", r"\1", self._gcode)
+
+        # Save the GCode to disk for debugging
+        with open(Path(os.getenv("temp"), "flashforge.gcode"), "w") as gcode_file:
+            gcode_file.write(self._gcode)
+
         self._postData = self._gcode.encode("ascii")
 
         # Prepare file_name for upload
@@ -126,15 +136,6 @@ class FlashforgeOutputDevice(OutputDevice):
         client.send(header.encode("ascii"))
         msg = client.recv(MSGSIZE).decode("ascii")
         Logger.log("d", f"[PRINTER]: {msg}")
-
-        # Send the file to the printer
-        # Target max speed of 150kb/s (153600b/s)
-        bytesSent = 0
-        transmitted = 0
-        timestart = monotonic()
-
-        chunksize = socket.TCP_MAXSEG
-        transferRate = 75000
 
         client.sendfile(BytesIO(self._postData))
 
