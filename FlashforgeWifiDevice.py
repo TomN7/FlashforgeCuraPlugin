@@ -175,8 +175,9 @@ class FlashforgeOutputDevice(OutputDevice):
         else:
             file_name = "%s." % Application.getInstance().getPrintInformation().jobName
 
+        self._attempts = 0
         self._postData = self._gcode.encode("ascii")
-        self._file_name = file_name.replace("DNX_", "", 1)
+        self._file_name = file_name.replace("DNX_", "", 1) + "." + self.outformat
         self._file_size = len(self._postData)
         self._header = f"~M28 {self._file_size} 0:/user/{self._file_name}\r\n"
         self._footer = "~M29\r\n"
@@ -185,9 +186,13 @@ class FlashforgeOutputDevice(OutputDevice):
         Logger.log("d", f"File: {self._file_name}")
         Logger.log("d", f"Size: {self._file_size} bytes")
 
+        self.startTransfer()
+
+    def startTransfer(self):
         # show a progress message
+        self._attempts += 1
         self._message = Message(
-            catalog.i18nc("@info:progress", "Uploading to {}...").format(self._name),
+            catalog.i18nc("@info:progress", f"Uploading to {self._name} (Attempt {self._attempts})..."),
             0,
             False,
             progress=0.0,
@@ -229,6 +234,14 @@ class FlashforgeOutputDevice(OutputDevice):
             if self.responseCounter >= 4:
                 self.responseCounter = 0
                 self.reset()
+                printSizeMatch = re.search(r"File opened:.+Size: (\d+)", splitResponse[1])
+                if printSizeMatch:
+                    printSize = int(printSizeMatch.group(1))
+                    if printSize == 0:
+                        if self._attempts < 10:
+                            self.startTransfer()
+                        else:
+                            raise OutputDeviceError.WriteRequestFailedError()
 
     def onUploadProgress(self, bytesSent):
         if self._stage == CommsState.SendFile and bytesSent > 0:
