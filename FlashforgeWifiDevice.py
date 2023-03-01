@@ -97,6 +97,7 @@ class CommsState(Enum):
     SendFile = 2
     SendFooter = 3
     SendStart = 4
+    CheckStatus = 5
 
 
 class FlashforgeOutputDevice(OutputDevice):
@@ -182,10 +183,15 @@ class FlashforgeOutputDevice(OutputDevice):
         self._header = f"~M28 {self._file_size} 0:/user/{self._file_name}\r\n"
         self._footer = "~M29\r\n"
         self._startCommand = f"~M23 0:/user/{self._file_name}\r\n"
+        self._statusCommand = "~M119\r\n"
 
         Logger.log("d", f"File: {self._file_name}")
         Logger.log("d", f"Size: {self._file_size} bytes")
 
+        Logger.log("d", "Connecting to Flashforge...")
+        self.client.connect()
+
+    def onConnect(self):
         self.startTransfer()
 
     def startTransfer(self):
@@ -198,12 +204,7 @@ class FlashforgeOutputDevice(OutputDevice):
             progress=0.0,
         )
         self._message.show()
-        Logger.log("d", "Connecting to Flashforge...")
-
         self._stage = CommsState.SendHeader
-        self.client.connect()
-
-    def onConnect(self):
         self.client.sendMessage(self._header)
 
     def onTransmitComplete(self):
@@ -222,7 +223,7 @@ class FlashforgeOutputDevice(OutputDevice):
             if self.responseCounter >= 3:
                 self.responseCounter = 0
                 self._stage = CommsState.SendFile
-                self.client.sendData(self._postData, 500)
+                self.client.sendData(self._postData, 750)
 
         elif self._stage == CommsState.SendFooter:
             if self.responseCounter >= 3:
@@ -233,15 +234,23 @@ class FlashforgeOutputDevice(OutputDevice):
         elif self._stage == CommsState.SendStart:
             if self.responseCounter >= 4:
                 self.responseCounter = 0
-                self.reset()
-                printSizeMatch = re.search(r"File opened:.+Size: (\d+)", splitResponse[1])
-                if printSizeMatch:
-                    printSize = int(printSizeMatch.group(1))
-                    if printSize == 0:
-                        if self._attempts < 10:
-                            self.startTransfer()
-                        else:
-                            raise OutputDeviceError.WriteRequestFailedError()
+                self._stage = CommsState.CheckStatus
+                QThread.msleep(1000)
+                self.client.sendMessage(self._statusCommand)
+
+        elif self._stage == CommsState.CheckStatus:
+            if self.responseCounter >= 8:
+                self.responseCounter = 0
+                if "BUILDING_FROM_SD" in splitResponse[2]:
+                    self.reset()
+                    self.client.disconnect()
+                elif "PAUSED" in splitResponse[2]:
+                    QThread.msleep(5000)
+                    self.client.sendMessage(self._statusCommand)
+                else:
+                    self.reset()
+                    if self._attempts < 10:
+                        self.startTransfer()
 
     def onUploadProgress(self, bytesSent):
         if self._stage == CommsState.SendFile and bytesSent > 0:
@@ -252,7 +261,6 @@ class FlashforgeOutputDevice(OutputDevice):
 
     def reset(self):
         self._stage = CommsState.Ready
-        self.client.disconnect()
         if self._message:
             self._message.hide()
             self._message = None
