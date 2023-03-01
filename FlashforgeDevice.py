@@ -101,7 +101,7 @@ class CommsState(Enum):
 
 
 class FlashforgeOutputDevice(OutputDevice):
-    def __init__(self):
+    def __init__(self, config):
         super().__init__("FlashforgeOutputDevice")
         self.setName("Flashforge Output Device")
         self.setShortDescription("Flashforge Print")
@@ -112,7 +112,7 @@ class FlashforgeOutputDevice(OutputDevice):
         global_container_stack = self.application.getGlobalContainerStack()
         self._name = global_container_stack.getName()
 
-        self.ipaddr = IPADDR
+        self.ipaddr = config.get("address", "0.0.0.0")
         self._stage = CommsState.Ready
         self.client = TcpClient(self.ipaddr, 8899)
         self.client.connected.connect(self.onConnect)
@@ -122,6 +122,9 @@ class FlashforgeOutputDevice(OutputDevice):
         self.client.sendComplete.connect(self.onTransmitComplete)
 
         self.responseCounter = 0
+        self._message = None
+
+        Logger.log("d", f"New Flashforge created | IP: {self.ipaddr}")
 
     ##  Called when the user clicks on the button to save to this device.
     #
@@ -279,17 +282,3 @@ class FlashforgeOutputDevice(OutputDevice):
 
         self.writeError.emit(self)
         self._stage = CommsState.Ready
-
-
-class FlashforgeOutputDevicePlugin(OutputDevicePlugin):
-    ##  Called upon launch.
-    #   You can use this to make a connection to the device or service, and
-    #   register the output device to be displayed to the user.
-    def start(self):
-        self.getOutputDeviceManager().addOutputDevice(FlashforgeOutputDevice())
-
-    ##  Called upon closing.
-    #   You can use this to break the connection with the device or service, and
-    #   you should unregister the output device to be displayed to the user.
-    def stop(self):
-        self.getOutputDeviceManager().removeOutputDevice("FlashforgeOutputDevice")

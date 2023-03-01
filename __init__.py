@@ -1,4 +1,4 @@
-from . import FlashforgeWifiDevice
+from . import FlashforgePlugin, FlashforgeAction
 
 
 def getMetaData():
@@ -6,7 +6,7 @@ def getMetaData():
 
 
 def register(app):
-    plugin = FlashforgeWifiDevice.FlashforgeOutputDevicePlugin()
     return {
-        "output_device": plugin,
+        "output_device": FlashforgePlugin.FlashforgeOutputDevicePlugin(),
+        "machine_action": FlashforgeAction.FlashforgeAction(),
     }
