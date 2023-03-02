@@ -164,7 +164,7 @@ class FlashforgeOutputDevice(OutputDevice):
         self._gcode = self._stream.getvalue()
 
         # Add Extruder index to Hotend and Bed Temp Commands
-        self._gcode = re.sub(r"(M1(?:40|04) S\d+)(\.0)?(?: T\d)?", r"\1 T0", self._gcode)
+        self._gcode = re.sub(r"(M1(?:40|04) S\d+)(?:\.\d+)?(?: T\d)?", r"\1 T0", self._gcode)
 
         # Remove decimals from fan speed commands
         self._gcode = re.sub(r"(M106 S\d+)\.\d+", r"\1", self._gcode)

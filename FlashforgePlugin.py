@@ -16,6 +16,7 @@ class FlashforgeOutputDevicePlugin(OutputDevicePlugin):
         self._application = CuraApplication.getInstance()
         self._application.globalContainerStackChanged.connect(self._checkFlashforgeDevices)
         init_config()
+        self._checkFlashforgeDevices()
 
     def _checkFlashforgeDevices(self):
         global_container_stack = self._application.getGlobalContainerStack()
