@@ -12,6 +12,9 @@ class FlashforgeOutputDevicePlugin(OutputDevicePlugin):
     ##  Called upon launch.
     #   You can use this to make a connection to the device or service, and
     #   register the output device to be displayed to the user.
+
+    flashforgeDevices = []
+
     def start(self):
         self._application = CuraApplication.getInstance()
         self._application.globalContainerStackChanged.connect(self._checkFlashforgeDevices)
@@ -33,10 +36,14 @@ class FlashforgeOutputDevicePlugin(OutputDevicePlugin):
                     global_container_stack.getId(), global_container_stack.getName()
                 ),
             )
-            manager.addOutputDevice(FlashforgeOutputDevice(config))
+
+            newDevice = FlashforgeOutputDevice(config)
+            self.flashforgeDevices.append(newDevice.getId())
+            manager.addOutputDevice(newDevice)
 
     ##  Called upon closing.
     #   You can use this to break the connection with the device or service, and
     #   you should unregister the output device to be displayed to the user.
     def stop(self):
-        self.getOutputDeviceManager().removeOutputDevice("FlashforgeOutputDevice")
+        for deviceID in self.flashforgeDevices:
+            self.getOutputDeviceManager().removeOutputDevice(deviceID)

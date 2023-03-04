@@ -24,7 +24,6 @@ from cura.CuraApplication import CuraApplication
 catalog = i18nCatalog("cura")
 
 MSGSIZE = 1460
-IPADDR = "192.168.1.50"
 
 
 class TcpClient(QWidget):
@@ -102,15 +101,15 @@ class CommsState(Enum):
 
 class FlashforgeOutputDevice(OutputDevice):
     def __init__(self, config):
-        super().__init__("FlashforgeOutputDevice")
-        self.setName("Flashforge Output Device")
+        self.application = CuraApplication.getInstance()
+        global_container_stack = self.application.getGlobalContainerStack()
+        printername = global_container_stack.getName()
+
+        super().__init__(printername)
+        self.setName(printername)
         self.setShortDescription("Flashforge Print")
         self.setDescription("Send job to a Flashforge Printer.")
         self.setIconName("print")
-
-        self.application = CuraApplication.getInstance()
-        global_container_stack = self.application.getGlobalContainerStack()
-        self._name = global_container_stack.getName()
 
         self.ipaddr = config.get("address", "0.0.0.0")
         self._stage = CommsState.Ready
@@ -168,6 +167,9 @@ class FlashforgeOutputDevice(OutputDevice):
 
         # Remove decimals from fan speed commands
         self._gcode = re.sub(r"(M106 S\d+)\.\d+", r"\1", self._gcode)
+
+        # Change all G0 commands to G1 to match Flashprint
+        self._gcode = re.sub(r"^G0 (.*)", r"G1 \1", self._gcode)
 
         # Save the GCode to disk for debugging
         with open(Path(os.getenv("temp"), "flashforge.gcode"), "w") as gcode_file:
