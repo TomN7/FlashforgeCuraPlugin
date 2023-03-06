@@ -4,9 +4,10 @@ from enum import Enum
 from io import StringIO
 import os, re
 
-from PyQt6.QtCore import QThread, pyqtSignal as QSignal
+from PyQt6.QtCore import QThread, pyqtSignal as QSignal, QByteArray, QBuffer, QIODevice
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtNetwork import QTcpSocket
+from PyQt6.QtGui import QImage
 
 from UM.Application import Application  # To find the scene to get the current g-code to write.
 from UM.FileHandler.WriteFileJob import WriteFileJob  # To serialise nodes to text.
@@ -20,10 +21,23 @@ from UM.Message import Message
 from UM.i18n import i18nCatalog
 
 from cura.CuraApplication import CuraApplication
+from cura.Snapshot import Snapshot
 
 catalog = i18nCatalog("cura")
 
 MSGSIZE = 1460
+
+# Helper function that extracts values from gcode to add to the binary header.
+def getValue(line, key, default=None):
+    if key not in line:
+        return default
+    else:
+        subPart = line[line.find(key) + len(key) :]
+        m = re.search("^-?[0-9]+\\.?[0-9]*", subPart)
+    try:
+        return float(m.group(0))
+    except:
+        return default
 
 
 class TcpClient(QWidget):
@@ -161,7 +175,34 @@ class FlashforgeOutputDevice(OutputDevice):
 
         self._stream.seek(0)
         self._gcode = self._stream.getvalue()
+        self.formatGCode()
 
+        # Prepare file_name for upload
+        if file_name:
+            file_name = Path(file_name).name
+        else:
+            file_name = "%s." % self.application.getPrintInformation().jobName
+
+        self._attempts = 0
+        if self._gxcode:
+            self._postData = self._gxcode
+            self.outformat = "gx"
+        else:
+            self._postData = self._gcode.encode("ascii")
+        self._file_name = file_name.replace("DNX_", "", 1) + "." + self.outformat
+        self._file_size = len(self._postData)
+        self._header = f"~M28 {self._file_size} 0:/user/{self._file_name}\r\n"
+        self._footer = "~M29\r\n"
+        self._startCommand = f"~M23 0:/user/{self._file_name}\r\n"
+        self._statusCommand = "~M119\r\n"
+
+        Logger.log("d", f"File: {self._file_name}")
+        Logger.log("d", f"Size: {self._file_size} bytes")
+
+        Logger.log("d", "Connecting to Flashforge...")
+        self.client.connect()
+
+    def formatGCode(self):
         # Add Extruder index to Hotend and Bed Temp Commands
         self._gcode = re.sub(r"(M1(?:40|04) S\d+)(?:\.\d+)?(?: T\d)?", r"\1 T0", self._gcode)
 
@@ -175,26 +216,142 @@ class FlashforgeOutputDevice(OutputDevice):
         with open(Path(os.getenv("temp"), "flashforge.gcode"), "w") as gcode_file:
             gcode_file.write(self._gcode)
 
-        # Prepare file_name for upload
-        if file_name:
-            file_name = Path(file_name).name
-        else:
-            file_name = "%s." % Application.getInstance().getPrintInformation().jobName
+        printInfo = self.application.getPrintInformation()
 
-        self._attempts = 0
-        self._postData = self._gcode.encode("ascii")
-        self._file_name = file_name.replace("DNX_", "", 1) + "." + self.outformat
-        self._file_size = len(self._postData)
-        self._header = f"~M28 {self._file_size} 0:/user/{self._file_name}\r\n"
-        self._footer = "~M29\r\n"
-        self._startCommand = f"~M23 0:/user/{self._file_name}\r\n"
-        self._statusCommand = "~M119\r\n"
+        try:
+            printtime = int(re.search(r";TIME:(\d+)", self._gcode).group(1))
+        except Exception as ex:
+            Logger.debug(f"Regex Exception: {ex}")
+            printtime = 0
 
-        Logger.log("d", f"File: {self._file_name}")
-        Logger.log("d", f"Size: {self._file_size} bytes")
+        try:
+            materialLength1 = int(1000 * printInfo.materialLengths[1])
+        except IndexError:
+            materialLength1 = 0
 
-        Logger.log("d", "Connecting to Flashforge...")
-        self.client.connect()
+        try:
+            resolution = float(re.search(r";Layer height: ([\d\.]+)", self._gcode).group(1))
+        except Exception as ex:
+            Logger.debug(f"Regex Exception: {ex}")
+            resolution = 0.0
+
+        try:
+            bedtemp = int(re.search(r"M140 S(\d+) T0", self._gcode).group(1))
+        except Exception as ex:
+            Logger.debug(f"Regex Exception: {ex}")
+            bedtemp = 0
+
+        try:
+            nozzletemp0 = int(re.search(r"M104 S(\d+) T0", self._gcode).group(1))
+        except Exception as ex:
+            Logger.debug(f"Regex Exception: {ex}")
+            nozzletemp0 = 0
+
+        try:
+            nozzletemp1 = int(re.search(r"M104 S(\d+) T1", self._gcode).group(1))
+        except Exception as ex:
+            Logger.debug(f"Regex Exception: {ex}")
+            nozzletemp1 = 0
+
+        try:
+            layercount = int(re.search(r";LAYER_COUNT:(\d+)", self._gcode).group(1))
+        except Exception as ex:
+            Logger.debug(f"Regex Exception: {ex}")
+            layercount = 0
+
+        # Generate Thumbnail
+        Logger.debug("Creating thumbnail image...")
+        thumb = None
+
+        try:
+            thumb = Snapshot.snapshot(width=320, height=320).convertToFormat(QImage.Format.Format_RGB666)
+            thumbdata = QByteArray()
+            thumbbuf = QBuffer(thumbdata)
+            thumbbuf.open(QIODevice.OpenModeFlag.WriteOnly)
+            thumb.save(thumbbuf, format="BMP")
+            thumbsize = thumbdata.length()
+
+            Logger.debug("Creating GX File Header")
+
+            self._gxcode = bytearray("xgcode 1.0\n\0".encode("ascii"))
+            self._gxcode += bytes.fromhex("00000000")  # Unknown
+            self._gxcode += (58).to_bytes(4, "little")  # Pointer to start of Thumbnail
+            self._gxcode += (58 + thumbsize).to_bytes(4, "little")  # Pointer to start of GCode
+            self._gxcode += (58 + thumbsize).to_bytes(4, "little")  # Pointer to start of GCode
+
+            # Offset 0x1C: Print Time, Seconds
+            Logger.debug(f"Print Time: {printtime} Seconds")
+            self._gxcode += printtime.to_bytes(4, "little")
+
+            # Offset 0x20: Main Extruder Filament use, mm
+            materialLength0 = int(1000 * printInfo.materialLengths[0])
+            Logger.debug(f"Material Length 0: {materialLength0} mm")
+            self._gxcode += materialLength0.to_bytes(4, "little")
+
+            # Offset 0x24: Alternate Extruder Filament use, mm
+            Logger.debug(f"Material Length 1: {materialLength1} mm")
+            self._gxcode += materialLength1.to_bytes(4, "little")
+
+            # Offset 0x28: Multi-extruder type - flashprint uses 0x01 on my machine
+            self._gxcode += int(1).to_bytes(2, "little")
+
+            # Offset 0x2A: Layer Height, microns
+            resolutionMicron = int(resolution * 1000)
+            Logger.debug(f"Layer Height: {resolutionMicron} micron")
+            self._gxcode += resolutionMicron.to_bytes(2, "little")
+
+            # Offset 0x2C: Unknown
+            self._gxcode += bytes.fromhex("0000")
+
+            # Offset 0x2E: Perimeter Shell Count (assumed 3, until I can figure out how to extract it)
+            self._gxcode += int(3).to_bytes(2, "little")
+
+            # offset 0x30: Print Speed, mm/s (assumed 0 until I can figure out how to extract it)
+            self._gxcode += int(0).to_bytes(2, "little")
+
+            # Offset 0x32: Initial Bed Temperature, °C
+            Logger.debug(f"Bed Temperature: {bedtemp} °C")
+            self._gxcode += bedtemp.to_bytes(2, "little")
+
+            # Offset 0x34: Initial Main Extruder Temperature, °C
+            Logger.debug(f"Extruder Temperature 0: {nozzletemp0} °C")
+            self._gxcode += nozzletemp0.to_bytes(2, "little")
+
+            # Offset 0x36: Initial Alternate Extruder Temperature, °C
+            Logger.debug(f"Extruder Temperature 1: {nozzletemp1} °C")
+            self._gxcode += nozzletemp1.to_bytes(2, "little")
+
+            # Offset 0x38: Unknown
+            self._gxcode += bytes.fromhex("FEFF")
+
+            Logger.debug(f"Layer Count: {layercount}")
+
+            # Offset 0x3A: Thumbnail
+            Logger.debug("Inserting Thumbnail to GX File")
+            self._gxcode += thumbdata.data()
+
+            # Add some print comments that the machine might be able to read
+            Logger.debug("Adding Metadata to GX File")
+            self._gxcode += (";machine_type: Adventurer 4 Series\r\n").encode("ascii")  # Todo: Extract from Cura
+            self._gxcode += (f";right_extruder_material: {printInfo.materialNames[0]}\r\n").encode("ascii")
+            self._gxcode += (f";right_extruder_temperature: {nozzletemp0}\r\n").encode("ascii")
+            self._gxcode += (f";platform_temperature: {bedtemp}\r\n").encode("ascii")
+            self._gxcode += (f";layer_height: {resolution}\r\n").encode("ascii")
+            self._gxcode += (f";layer_count: {layercount}\r\n").encode("ascii")
+            # self._gxcode += (f";base_print_speed: {printSpeed}\r\n").encode("ascii")
+            # self._gxcode += (f";travel_speed: {travelSpeed}\r\n").encode("ascii")
+            self._gxcode += (";start gcode\r\n").encode("ascii")
+
+            # Replace all Layer comments to flashprint format (to increment progress bar)
+            gxcode = re.sub(r";LAYER:\d+", f";layer:{resolution}", self._gcode)
+
+            # Finally attach the GCode
+            Logger.debug("Attaching GCode to GX File")
+            self._gxcode += gxcode.encode("ascii")
+
+        except Exception:
+            Logger.logException("w", "Failed to Generate GX File")
+            self._gxcode = None
 
     def onConnect(self):
         self.startTransfer()
